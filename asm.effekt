@@ -1,0 +1,243 @@
+import stream
+import binstream
+import array
+import jitlib
+
+type Label = Int
+type Register = Int
+
+effect label(): Label
+type AsmInstruction {
+  NOP()
+  RET(reg: Register)
+  JMP(to: Label)
+  MOV(from: Register, to: Register)
+  // Conditional jumps
+  JEQ(to: Label, reg: Register, value: Int)
+  JNE(to: Label, reg: Register, value: Int)
+  // TODO more comparisons, maybe hints
+
+  // TODO constants
+  CONST(to: Register, value: Int)
+  INC(to: Register, value: Int)
+
+  // TODO Logic
+  // TODO Arithmetic
+  ADD(in1: Register, in2: Register, out: Register)
+  SUB(in1: Register, in2: Register, out: Register)
+  MUL(in1: Register, in2: Register, out: Register)
+  // TODO Memory access
+  LOAD(addr: Register, out: Register, offset: Register)
+  STORE(addr: Register, in: Register, offset: Register)
+  LOAD_BYTE(addr: Register, out: Register, offset: Register)
+  STORE_BYTE(addr: Register, in: Register, offset: Register)
+  // TODO Basic memory management etc
+}
+
+effect Asm = {
+  label,
+  emit[AsmInstruction]
+}
+
+interface RegisterAlloc {
+  def argReg(a: Int): Register / emit[AsmInstruction]
+  def freshReg(): Register
+  def dropReg(reg: Register): Unit
+}
+def tmpReg[R]{ body: Register => R }: R / RegisterAlloc = {
+  val t = do freshReg()
+  val r = body(t)
+  do dropReg(t)
+  r
+}
+def registerAllocatorArm[R]{ body: => R / RegisterAlloc }: R = {
+  val tmpRegs = array(7, false)
+  try body()
+  with RegisterAlloc {
+    def argReg(i) = {
+      if (i <= 7) {
+        resume{ => i }
+      } else <> // TODO load from frame
+    }
+    def freshReg() = {
+      var j = 0
+      while(tmpRegs.unsafeGet(j) && j < 7) { j = j + 1 }
+      if (tmpRegs.unsafeGet(j)) <>
+      tmpRegs.unsafeSet(j, true)
+      resume(j + 9)
+    }
+    def dropReg(r) = {
+      val j = r - 9
+      tmpRegs.unsafeSet(j, false)
+      resume(())
+    }
+  }
+}
+
+record BackpatchID(start: Int, end: Int)
+def backpatchable{ body: => Unit }: BackpatchID / getPos = {
+  val start = do getPos()
+  body()
+  val end = do getPos()
+BackpatchID(start, end)
+}
+def backpatch(id: BackpatchID){ pad: => Unit }{ body: => Unit }: Unit / {getPos, seek} = {
+  val before = do getPos()
+  do seek(id.start)
+  body()
+  while(do getPos() < id.end) {
+    pad()
+  }
+  if(do getPos() != id.end) {
+    println(do getPos())
+    println(id.end)
+    panic("Backpatching failed")
+  }
+  do seek(before)
+}
+def backpatch(id: BackpatchID){ body: => Unit }: Unit / {getPos, seek, emit[AsmInstruction]} =
+  backpatch(id){ do emit(NOP()) }{body}
+
+def aarch64{ body: => Unit / Asm }: Unit / {getPos, emit[Byte]} = {
+  try body() 
+  with label { () => resume(do getPos()) }
+  with emit[AsmInstruction] { ins =>
+    groupBytesLE{
+      ins match {
+        case RET(reg) =>
+          // move reg to correct register if necessary
+          if(reg != 0) {
+            // MOV
+            bit"${0.LE.OfWidth(5)} 11111 000000 ${reg.LE.OfWidth(5)} 0 00 01010 10 1"
+          }
+          bit"00000 ${30.LE.OfWidth(5)} 0 0 0000 11111 01 0 0 1101011"
+          resume(())
+        case NOP() =>
+          bit"11111 000 0000 0100 110 00 0 0010101011"
+          resume(())
+        case JMP(to) =>
+          val rel = to - do getPos()
+          val imm26 = rel / 4
+          bit"${imm26.Signed.LE.OfWidth(26)} 10100 0"
+          resume(())
+        case JEQ(to, reg, v) =>
+          if(v == 0) {
+            // CBZ
+            val rel = to - do getPos()
+            val imm19 = rel / 4
+            bit"${reg.LE.OfWidth(5)} ${imm19.Signed.LE.OfWidth(19)} 0 010110 1"
+          } else if (v >= 0 && v <= 4095) {
+            // CMP (immediate)
+            bit"11111 ${reg.LE.OfWidth(5)} ${v.LE.OfWidth(12)} 0 010001 1 1 1"
+            // B.cond
+            val rel = to - do getPos()
+            val imm19 = rel / 4
+            bit"0000 0 ${imm19.Signed.LE.OfWidth(19)} 0 0101010"
+          } else <>
+          resume(())
+        case JNE(to, reg, v) =>
+          if(v == 0) {
+            // CBNZ
+            val rel = to - do getPos()
+            val imm19 = rel / 4
+            bit"${reg.LE.OfWidth(5)} ${imm19.Signed.LE.OfWidth(19)} 1 010110 1"
+          } else if(v >= 0 || v <= 4095) {
+            // CMP (immediate)
+            bit"11111 ${reg.LE.OfWidth(5)} ${v.LE.OfWidth(12)} 0 010001 1 1 1"
+            // B.cond
+            val rel = to - do getPos()
+            val imm19 = rel / 4
+            bit"0001 0 ${imm19.Signed.LE.OfWidth(19)} 0 0101010"
+          } else <>
+          resume(())
+        case CONST(out, v) and v >=0 and v <= 65535 =>
+          // MOVZ
+          bit"${out.LE.OfWidth(5)} ${0.LE.OfWidth(16)} ${0.LE.OfWidth(2)} 101001 01 1"
+          resume(())
+        case CONST(out, v) =>
+          var shift = 0
+          var sv = v
+          var fst = true
+          val mul = pow(2, 16)
+          while(shift < 4) {
+            if (mod(sv, mul) != 0){
+              if (fst) {
+                // MOVZ
+                bit"${out.LE.OfWidth(5)} ${sv.LE.OfWidth(16)} ${shift.LE.OfWidth(2)} 101001 01 1"
+                fst = false
+              } else {
+                // MOVK
+                bit"${out.LE.OfWidth(5)} ${sv.LE.OfWidth(16)} ${shift.LE.OfWidth(2)} 101001 11 1"
+              }
+            }
+            sv = sv / mul
+            shift = shift + 1
+          }
+          resume(())
+        case MOV(fr, to) =>
+          bit"${to.LE.OfWidth(5)} 11111 000000 ${fr.LE.OfWidth(5)} 0 00 01010 10 1"
+          resume(())
+        case ADD(in1, in2, out) =>
+          bit"${out.LE.OfWidth(5)} ${in1.LE.OfWidth(5)} 000000 ${in2.LE.OfWidth(5)} 0 00 11010 0 0 1"
+          resume(())
+        case SUB(in1, in2, out) =>
+          bit"${out.LE.OfWidth(5)} ${in1.LE.OfWidth(5)} 000000 ${in2.LE.OfWidth(5)} 0 00 11010 0 1 1"
+          resume(())
+        case MUL(in1, in2, out) =>
+          bit"${out.LE.OfWidth(5)} ${in1.LE.OfWidth(5)} 11111 0 ${in2.LE.OfWidth(5)} 000 11011 00 1"
+          resume(())
+        case LOAD(addr, out, offset) =>
+          bit"${out.LE.OfWidth(5)} ${addr.LE.OfWidth(5)} 01 0 110 ${offset.LE.OfWidth(5)} 1 10 00 0 111 11"
+          resume(())
+        case STORE(addr, in, offset) =>
+          bit"${in.LE.OfWidth(5)} ${addr.LE.OfWidth(5)} 01 0 110 ${offset.LE.OfWidth(5)} 1 00 00 0 111 11"
+          resume(())
+        case LOAD_BYTE(addr, out, offset) =>
+          bit"${out.LE.OfWidth(5)} ${addr.LE.OfWidth(5)} 01 0 111 ${offset.LE.OfWidth(5)} 1 10 00 0 111 00"
+          resume(())
+        case STORE_BYTE(addr, in, offset) =>
+          bit"${in.LE.OfWidth(5)} ${addr.LE.OfWidth(5)} 01 0 111 ${offset.LE.OfWidth(5)} 1 00 00 0 111 00"
+          resume(())
+        case INC(reg, v) =>
+          if (v >= 0 and v <= 4095) {
+            bit"${reg.LE.OfWidth(5)} ${reg.LE.OfWidth(5)} ${v.LE.OfWidth(12)} 0 010001 0 0 1"
+            resume(())
+          } else { <> }
+      }
+    }
+  }
+}
+
+namespace examples {
+  def main() = {
+    with on[OutOfBounds].panic
+    with on[MissingValue].panic
+
+    def code() = {
+      val r = 0 // TODO default register
+      do emit(MOV(r, r + 1))
+      do emit(CONST(r, 42))
+      val bp = backpatchable{
+        do emit(NOP())
+        do emit(NOP())
+      }
+      do emit(CONST(r, 377))
+      val lbl = do label()
+      backpatch(bp){
+        do emit(JNE(lbl, r + 1, 0))
+      }
+      do emit(STORE(-1,r,-1))
+      do emit(LOAD_BYTE(-1,r,-1))
+      do emit(RET(r))
+    }
+
+    with on[OutOfBounds].panic
+    with def buf = jitBuffer(160)
+    buf.write(0){
+      aarch64{ code() }
+    }
+    println(show(buf.call(0, 12)))
+    println(show(buf.call(0, 0)))
+    ()
+  }
+}

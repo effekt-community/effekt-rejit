@@ -1,0 +1,164 @@
+/// Minimal Lib for buffers that allow writing and
+/// then executing (machine) code at runtime.
+// TODO also allow calling with multiple / other values
+import binstream
+import stream
+
+// generated from jitlib.c (see Makefile)
+extern include llvm "jitlib.ll"
+
+namespace internal {
+  extern type JitBuffer
+  extern {io} def allocateJitBuffer(size: Int): JitBuffer =
+    llvm """
+      %z = call %Pos @c_jit_allocate_buffer(%Int ${size})
+      ret %Pos %z
+    """
+  extern {io} def freeJitBuffer(buffer: JitBuffer, size: Int): Unit =
+    llvm """
+      %z = call %Pos @c_jit_free_buffer(%Pos ${buffer}, %Int ${size})
+      ret %Pos %z
+    """
+  extern {io} def makeWritable(buffer: JitBuffer, size: Int): JitBuffer =
+    llvm """
+      %z = call %Pos @c_jit_make_writable(%Pos ${buffer}, %Int ${size})
+      ret %Pos %z
+    """
+  extern {io} def makeExecutable(buffer: JitBuffer, size: Int): JitBuffer =
+    llvm """
+      %z = call %Pos @c_jit_make_executable(%Pos ${buffer}, %Int ${size})
+      ret %Pos %z
+    """
+  extern {io} def write(buffer: JitBuffer, offset: Int, value: Byte): JitBuffer =
+    llvm """
+      %z = call %Pos @c_jit_write(%Pos ${buffer}, %Int ${offset}, %Byte ${value})
+      ret %Pos %z
+    """
+  extern {io} def callI_I(buffer: JitBuffer, offset: Int, arg: Int): Int =
+    llvm """
+      %z = call %Int @c_jit_callI_I(%Pos ${buffer}, %Int ${offset}, %Int ${arg})
+      ret %Int %z
+    """
+  extern {io} def callI_PI[A](buffer: JitBuffer, offset: Int, arg1: A, arg2: Int): Int =
+    llvm """
+      %z = call %Int @c_jit_callI_PI(%Pos ${buffer}, %Int ${offset}, %Pos ${arg1}, %Int ${arg2})
+      ret %Int %z
+    """
+  extern {io} def callP_P[A,R](buffer: JitBuffer, offset: Int, arg: A): R =
+    llvm """
+      %z = call %Int @c_jit_callI_I(%Pos ${buffer}, %Int ${offset}, %Pos ${arg})
+      ret %Pos %z
+    """
+  extern {io} def callP_PP[A,B,R](buffer: JitBuffer, offset: Int, arg1: A, arg2: B): R =
+    llvm """
+      %z = call %Int @c_jit_callI_I(%Pos ${buffer}, %Int ${offset}, %Pos ${arg1}, %Pos ${arg2})
+      ret %Pos %z
+    """
+}
+
+effect seek(to: Int): Unit
+
+/// Buffer that allows writing and then executing
+interface JitBuffer {
+  /// Write a single byte to a given offset
+  def writeByte(offset: Int, value: Byte): Unit / Exception[OutOfBounds]
+  /// Write multiple bytes at the given position, returns next position after
+  def write(offset: Int){ body: => Unit / {emit[Byte], getPos, pad[Byte], seek} }: Int / Exception[OutOfBounds]
+  /// Call the code at the given offset as a function Int => Int
+  def call(offset: Int, arg: Int): Int / Exception[OutOfBounds]
+  /// Call the code at the given offset as a function Int => Int
+  def callPI[A](offset: Int, arg1: A, arg2: Int): Int / Exception[OutOfBounds]
+}
+
+/// Run body with a new JitBuffer of the given size
+def jitBuffer[R](size: Int){ body: {JitBuffer} => R }: R = {
+  val buf: internal::JitBuffer = internal::allocateJitBuffer(size)
+  buf.internal::makeWritable(size)
+  var executable = false
+  def ifce = new JitBuffer {
+    def writeByte(offset, value) = {
+      if (executable) {
+        buf.internal::makeWritable(size)
+        executable = false
+      }
+      if (offset < size) {
+        buf.internal::write(offset, value); ()
+      } else {
+        do raise(OutOfBounds(), "Trying to write to JitBuffer out-of-bounds")
+      }
+    }
+    def write(offset){body} = {
+      if (executable) {
+        buf.internal::makeWritable(size)
+        executable = false
+      }
+      var current = offset
+      try {
+        try body()
+        with pad[Byte] { fac =>
+          resume { {gen} =>
+            while(mod(current, fac) != 0){
+              do emit[Byte](gen())
+            }
+          }
+        }
+      } with emit[Byte] { b =>
+        if (current >= size) {
+          do raise(OutOfBounds(), "Trying to write to JitBuffer out-of-bounds")
+        }
+        buf.internal::write(current, b)
+        current = current + 1
+        resume(())
+      } with seek { to => current = to; resume(()) }
+      with getPos { () => resume(current) }
+      current
+    }
+    def call(offset, arg) = {
+      if (not(executable)) {
+        buf.internal::makeExecutable(size)
+        executable = true
+      }
+      if (offset < size) {
+        buf.internal::callI_I(offset, arg)
+      } else {
+        do raise(OutOfBounds(), "Trying to call JitBuffer out-of-bounds")
+      }
+    }
+    def callPI[A](offset, arg1, arg2) = {
+      if (not(executable)) {
+        buf.internal::makeExecutable(size)
+        executable = true
+      }
+      if (offset < size) {
+        buf.internal::callI_PI(offset, arg1, arg2)
+      } else {
+        do raise(OutOfBounds(), "Trying to call JitBuffer out-of-bounds")
+      }
+    }
+  }
+  val r = body{ifce}
+  buf.internal::freeJitBuffer(size)
+  r
+}
+
+namespace examples {
+  def main() = {
+    with on[OutOfBounds].panic
+    with def buf = jitBuffer(30)
+    buf.write(0) {
+      // Clang-generated code for testing (x => x + 42)
+      hex"""
+      ff 43 00 d1
+      e0 0f 00 b9
+      e8 0f 40 b9
+      00 a9 00 11
+      ff 43 00 91
+      """
+      // Ret
+      hex"C0 03 5F D6"
+    }
+    println(show(buf.call(0, -3)))
+    println(show(buf.call(0, 0)))
+    println(show(buf.call(0, 3)))
+  }
+}

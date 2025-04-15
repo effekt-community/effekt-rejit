@@ -1,0 +1,298 @@
+import asm
+import jitlib
+import bytearray
+import stream
+import array
+import binstream
+import stringbuffer
+import bench
+
+// Helpers
+// --------
+
+def listEq[A](a: List[A], b: List[A]){ by: (A,A) => Bool }: Bool = {
+  (a,b) match {
+    case (Nil(), Nil()) => true
+    case (Cons(hda, tla), Cons(hdb, tlb)) and by(hda, hdb) =>
+      listEq(tla, tlb){by}
+    case _ => false
+  }
+}
+def unique[A](a: List[A]){ eq: (A,A) => Bool }: List[A] = {
+  def go(a: List[A], acc: List[A]): List[A] = a match {
+    case Cons(hd, tl) and acc.any{ e => eq(hd, e) } => go(tl, acc)
+    case Cons(hd, tl) => go(tl, Cons(hd, acc))
+    case Nil() => acc
+  }
+  go(a, Nil()).reverse
+}
+
+// Derivative-based regexes
+// ------------------------
+
+type Reg {
+  Any()
+  Literal(b: Byte)
+  Choice(alternatives: List[Reg])
+  Star(of: Reg)
+  Seq(els: List[Reg])
+  Neg(of: Reg)
+}
+val fail = Choice(Nil())
+val eps = Seq(Nil())
+def seq(a: Reg, b: Reg): Reg = (a,b) match {
+  case (Seq(as), Seq(bs)) => Seq(as.append(bs))
+  case (Seq(as), b) => Seq(as.append([b]))
+  case (a, Seq(bs)) => Seq(Cons(a, bs))
+  case (a, b) => Seq([a, b])
+} match {
+  case Seq(Cons(a, Nil())) => a
+  case o => o
+}
+def choice(as: List[Reg]): Reg = as.flatMap {
+  case Choice(bs) => bs
+  case o => [o]
+}.unique{infixEq} match {
+  case Cons(a, Nil()) => a
+  case o => Choice(o)
+}
+def neg(of: Reg): Reg = of match {
+  case Neg(r) => r
+  case a => Neg(a)
+}
+def infixEq(a: Reg, b: Reg): Bool = (a,b) match {
+  case (Any(), Any()) => true
+  case (Literal(a), Literal(b)) => a.toInt == b.toInt
+  case (Choice(as), Choice(bs)) => listEq(as, bs){infixEq}
+  case (Star(a), Star(b)) => a == b
+  case (Seq(as), Seq(bs)) => listEq(as, bs){infixEq}
+  case (Neg(a), Neg(b)) => a == b
+  case _ => false
+}
+
+def derive(reg: Reg, by: Byte): Reg = {
+  reg match {
+    case Any() => eps
+    case Literal(b) and b.toInt == by.toInt => eps
+    case Literal(b) => fail
+    case Choice(alts) => choice(alts.map { alt => derive(alt, by) } )
+    case Star(of) => seq(derive(of, by), Star(of))
+    case Seq(Cons(hd, tl)) and hd.accepts =>
+      choice([derive(hd, by), derive(Seq(tl), by)])
+    case Seq(Cons(hd, tl)) => seq(derive(hd, by), Seq(tl))
+    case Seq(Nil()) => fail
+    case Neg(of) => Neg(derive(of, by))
+  }
+}
+def accepts(r: Reg): Bool = r match {
+  case Choice(alts) => alts.any{ v => v.accepts }
+  case Star(_) => true
+  case Seq(Nil()) => true
+  case Neg(of) => not(of.accepts)
+  case _ => false
+}
+
+def matching_interpreted(re: Reg, input: ByteArray): Bool = {
+  var cur = re
+  var pos = 0
+  while(pos < input.size()) {
+    cur = derive(cur, input.unsafeGet(pos))
+    pos = pos + 1
+  }
+  cur.accepts()
+}
+
+// JIT
+// ---
+
+def jit_matcher[R](re: Reg){ body: { ByteArray => Bool } => R }: R = registerAllocatorArm{
+  with on[OutOfBounds].panic
+
+  // instruction size based parameters
+  val nStates = 32
+  val nTransitions = 27 // 27 s.t. stateSize is power of 2
+  val stateSize = 8 * nTransitions + 10 * 4
+
+  with def compiled = jitBuffer(nStates * stateSize)
+
+  // JIT state
+  var nextStateIndex = 0
+  val states = array(nStates, fail)
+  val statePos = array(nStates, 0)
+  val accepting = array(nStates, false)
+  val posBits = 32
+
+  
+  def interpret(st: Reg, ba: ByteArray, pos: Int) = {
+    val next = derive(st, ba.unsafeGet(pos))
+    (next, pos + 1)
+  }
+  def enterNative(idx: Int, ba: ByteArray, pos: Int) = {
+    val offset = idx * stateSize
+    val ret = compiled.callPI(offset, ba, pos)
+    val nextPos = mod(ret, pow(2,posBits))
+    val st = bitwiseShr(ret, posBits)
+    (st, nextPos - 1)
+  }
+  
+  def initialize(st: Reg) = {
+    val index = nextStateIndex
+    if(index < nStates) {
+      states.unsafeSet(index, st)
+      accepting.unsafeSet(index, st.accepts)
+      val offset = index * stateSize
+      val end = compiled.write(offset){ aarch64{
+
+        // registers
+        val rSize = do argReg(0)
+        val rPtr = do argReg(1)
+        val rPos = do argReg(2)
+        val rCurChar = do argReg(3)
+        val rRet = 0
+
+        // prelude
+        do emit(INC(rPtr,16)) // get contents ptr
+        // loop checks
+        val tmp2 = do freshReg()
+        do emit(MOV(rPos, tmp2))
+        do emit(INC(rPos,1)) // increment pos
+        val left = do freshReg()
+        do emit(SUB(rSize, tmp2, left))
+        val bp = backpatchable{
+          do emit(JEQ(offset, left, 0))
+        }
+        do dropReg(left)
+        do emit(LOAD_BYTE(rPtr,rCurChar,tmp2))
+        do dropReg(tmp2)
+        statePos.unsafeSet(index, do getPos())
+
+        // space for transitions
+        repeat(nTransitions){ do emit(NOP()); do emit(NOP()) }
+
+        // deopt case
+        val exit = do label()
+        backpatch(bp){
+          do emit(JEQ(exit, left, 0))
+        }
+        tmpReg{ tmp =>
+          do emit(CONST(tmp, bitwiseShl(index, posBits)))
+          do emit(ADD(rPos,tmp,rRet))
+        }
+        do emit(RET(rRet))
+      }}
+      nextStateIndex = nextStateIndex + 1
+      if(end > nextStateIndex * stateSize) panic("State code too big")
+      index
+    } else -1
+  }
+  val startState = initialize(re)
+  def findState(st: Reg): Int = {
+    var res = -1
+    boundary{
+      states.foreachIndex{ (idx, el) =>
+        if(st == el) {
+          res = idx; do stop()
+        }
+      }
+    }
+    res
+  }
+  def ensureState(st: Reg): Int = findState(st) match {
+    case -1 => initialize(st)
+    case i => i
+  }
+  def addTransition(frIdx: Int, to: Reg, b: Byte) = boundary{
+    def insertTransition(frIdx: Int, toIdx: Int, b: Byte) = {
+      val pos = statePos.unsafeGet(frIdx)
+      if (pos < (1 + frIdx) * stateSize - 3 * 4) {
+        statePos.unsafeSet(frIdx, compiled.write(pos){ aarch64{
+          val rCurChar = do argReg(3)
+          do emit(JEQ(toIdx * stateSize + 4, rCurChar, b.toInt))
+        }})
+      }
+    }
+    val toIdx = ensureState(to)
+    insertTransition(frIdx, toIdx, b)
+  }
+  
+  body{ ba =>
+    with on[OutOfBounds].panic
+
+    // program state
+    var pos = 0
+    var stIdx = startState
+    var st = re
+
+    // run loop
+    while(pos < ba.size()) {
+      if (stIdx == -1) {
+        val (ist, ipos) = interpret(st, ba, pos)
+        st = ist
+        pos = ipos
+        stIdx = findState(ist) match {
+          case -1 => initialize(ist)
+          case o => o
+        }
+      } else {
+        val (nst, npos) = enterNative(stIdx, ba, pos)
+        if (pos == npos && pos < ba.size()) {
+          val (ist, ipos) = interpret(states.unsafeGet(stIdx), ba, pos)
+          addTransition(stIdx, ist, ba.unsafeGet(pos))
+          pos = ipos
+          st = ist
+          stIdx = ensureState(st)
+        } else {
+          stIdx = nst
+          pos = npos
+          st = states.unsafeGet(stIdx)
+        }
+      }
+    }
+    if (stIdx > 0){ accepting.unsafeGet(stIdx) } else { st.accepts }
+  }
+}
+
+def assertTrue(b: Bool) = { if(not(b)){ panic("assertion failed") }}
+def assertFalse(b: Bool) = { if(b){ panic("assertion failed") }}
+def main() = {
+  val k = 10000
+  val re = Choice([Star(Literal('a'.toInt.toByte)), Star(Seq([Literal('a'.toInt.toByte), Literal('a'.toInt.toByte)]))])
+  println(formatMs(timed{
+  repeat(k){
+    def n(s: ByteArray) = matching_interpreted(re, s)
+    assertTrue(n(fromString("")))
+    assertTrue(n(fromString("a")))
+    assertTrue(n(fromString("aa")))
+    assertFalse(n(fromString("aab")))
+    assertFalse(n(fromString("aaaaaaaaaaaaaaaaaaaaaaac")))
+    assertTrue(n(fromString("aaaaaaaaaaaaaaaaaaaaaaa")))
+    assertFalse(n(fromString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad")))
+    assertTrue(n(fromString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")))
+  }}))
+  
+  with def m = jit_matcher(re)
+  println(formatMs(timed{
+    repeat(k){
+    assertTrue(m(fromString("")))
+    assertTrue(m(fromString("a")))
+    assertTrue(m(fromString("aa")))
+    assertFalse(m(fromString("aab")))
+    assertFalse(m(fromString("aaaaaaaaaaaaaaaaaaaaaaac")))
+    assertTrue(m(fromString("aaaaaaaaaaaaaaaaaaaaaaa")))
+    assertFalse(m(fromString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad")))
+    assertTrue(m(fromString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")))
+  }}))
+
+  println(formatMs(timed{
+    repeat(k){
+    with def l = jit_matcher(re)
+    assertTrue(l(fromString("")))
+    assertTrue(l(fromString("a")))
+    assertTrue(l(fromString("aa")))
+    assertFalse(l(fromString("aab")))
+    assertFalse(l(fromString("aaaaaaaaaaaaaaaaaaaaaaac")))
+    assertTrue(l(fromString("aaaaaaaaaaaaaaaaaaaaaaa")))
+    assertFalse(l(fromString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad")))
+    assertTrue(l(fromString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")))
+  }}))
+}
