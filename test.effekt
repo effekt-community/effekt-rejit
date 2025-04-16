@@ -1,0 +1,46 @@
+module src/test
+
+import test
+import rejit
+import bytearray
+import stringbuffer
+
+extern pure def isLLVM(): Bool =
+  llvm { true }
+  default { false }
+  
+def l(c: Char): Reg = Literal(c.toInt.toByte)
+def main() = mainSuite("rejit") {
+  def forBackend(name: String){ impl: (Reg, ByteArray) => Bool }: Unit = {
+    test(s"${name}: empty") {
+      val re = Seq(Nil())
+      assert(impl(re, fromString("")), true)
+      assert(impl(re, fromString("a")), false)
+    }
+    test(s"${name}: const") {
+      val re = Seq([l('a'), l('b')])
+      assert(impl(re, fromString("")), false)
+      assert(impl(re, fromString("a")), false)
+      assert(impl(re, fromString("b")), false)
+      assert(impl(re, fromString("ab")), true)
+    }
+    test(s"${name}: a*") {
+      val re = Star(l('a'))
+      assert(impl(re, fromString("")), true)
+      assert(impl(re, fromString("a")), true)
+      assert(impl(re, fromString("aa")), true)
+      assert(impl(re, fromString("ba")), false)
+      assert(impl(re, fromString("ab")), false)
+      assert(impl(re, fromString("b")), false)
+    }
+  }
+  forBackend("interpreted"){matching_interpreted}
+  if(isLLVM()) {
+    forBackend("fresh JIT"){ (re, ba) => 
+      with def m = jit_matcher(re)
+      m(ba)
+    }
+  } else {
+    println("No LLVM, JIT not supported")
+  }
+}
