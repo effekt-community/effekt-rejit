@@ -108,9 +108,9 @@ def hex{ body: => Unit / { literal, HexSplices } }: Unit / emit[Byte] = {
   with literal { s =>
       feed(s){
         exhaustively {
-          with on[MissingValue].default{ () }
-          val upper: Int = hexDigitValue(do read[Char]()).value
-          val lower: Int = hexDigitValue(do read[Char]()).value
+          with on[WrongFormat].default { () }
+          val upper: Int = hexDigitValue(do read[Char]())
+          val lower: Int = hexDigitValue(do read[Char]())
           do emit[Byte]((16 * upper + lower).toByte)
         }
       }
