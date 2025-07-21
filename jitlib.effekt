@@ -1,6 +1,8 @@
 /// Minimal Lib for buffers that allow writing and
 /// then executing (machine) code at runtime.
-// TODO also allow calling with multiple / other values
+/// TODO also allow calling with multiple / other values
+module jitlib
+
 import binstream
 import stream
 
