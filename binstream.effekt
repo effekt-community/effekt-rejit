@@ -338,7 +338,7 @@ def bit{ body: => Unit / { literal, BinSplices } }: Unit / emit[Bit] = {
     resume(())
   }
   with splice[OfWidth[BE[Signed[Int]]]] { i =>
-    collectList[Bit]{
+    list::collect[Bit]{
       if(i.raw.raw.raw < 0){
         twoscomplementLE{ bitsLE(0 - i.raw.raw.raw, i.width) }
       } else {

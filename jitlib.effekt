@@ -11,47 +11,47 @@ extern include llvm "jitlib.ll"
 
 namespace internal {
   extern type JitBuffer
-  extern {io} def allocateJitBuffer(size: Int): JitBuffer =
+  extern def allocateJitBuffer(size: Int) at io : JitBuffer =
     llvm """
       %z = call %Pos @c_jit_allocate_buffer(%Int ${size})
       ret %Pos %z
     """
-  extern {io} def freeJitBuffer(buffer: JitBuffer, size: Int): Unit =
+  extern def freeJitBuffer(buffer: JitBuffer, size: Int) at io : Unit =
     llvm """
       %z = call %Pos @c_jit_free_buffer(%Pos ${buffer}, %Int ${size})
       ret %Pos %z
     """
-  extern {io} def makeWritable(buffer: JitBuffer, size: Int): JitBuffer =
+  extern def makeWritable(buffer: JitBuffer, size: Int) at io : JitBuffer =
     llvm """
       %z = call %Pos @c_jit_make_writable(%Pos ${buffer}, %Int ${size})
       ret %Pos %z
     """
-  extern {io} def makeExecutable(buffer: JitBuffer, size: Int): JitBuffer =
+  extern def makeExecutable(buffer: JitBuffer, size: Int) at io : JitBuffer =
     llvm """
       %z = call %Pos @c_jit_make_executable(%Pos ${buffer}, %Int ${size})
       ret %Pos %z
     """
-  extern {io} def write(buffer: JitBuffer, offset: Int, value: Byte): JitBuffer =
+  extern def write(buffer: JitBuffer, offset: Int, value: Byte) at io : JitBuffer =
     llvm """
       %z = call %Pos @c_jit_write(%Pos ${buffer}, %Int ${offset}, %Byte ${value})
       ret %Pos %z
     """
-  extern {io} def callI_I(buffer: JitBuffer, offset: Int, arg: Int): Int =
+  extern def callI_I(buffer: JitBuffer, offset: Int, arg: Int) at io : Int =
     llvm """
       %z = call %Int @c_jit_callI_I(%Pos ${buffer}, %Int ${offset}, %Int ${arg})
       ret %Int %z
     """
-  extern {io} def callI_PI[A](buffer: JitBuffer, offset: Int, arg1: A, arg2: Int): Int =
+  extern def callI_PI[A](buffer: JitBuffer, offset: Int, arg1: A, arg2: Int) at io : Int =
     llvm """
       %z = call %Int @c_jit_callI_PI(%Pos ${buffer}, %Int ${offset}, %Pos ${arg1}, %Int ${arg2})
       ret %Int %z
     """
-  extern {io} def callP_P[A,R](buffer: JitBuffer, offset: Int, arg: A): R =
+  extern def callP_P[A,R](buffer: JitBuffer, offset: Int, arg: A) at io : R =
     llvm """
       %z = call %Int @c_jit_callI_I(%Pos ${buffer}, %Int ${offset}, %Pos ${arg})
       ret %Pos %z
     """
-  extern {io} def callP_PP[A,B,R](buffer: JitBuffer, offset: Int, arg1: A, arg2: B): R =
+  extern def callP_PP[A,B,R](buffer: JitBuffer, offset: Int, arg1: A, arg2: B) at io : R =
     llvm """
       %z = call %Int @c_jit_callI_I(%Pos ${buffer}, %Int ${offset}, %Pos ${arg1}, %Pos ${arg2})
       ret %Pos %z
