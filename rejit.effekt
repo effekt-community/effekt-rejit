@@ -96,7 +96,7 @@ def matching_interpreted(re: Reg, input: ByteArray): Bool = {
   var cur = re
   var pos = 0
   while(pos < input.size()) {
-    cur = derive(cur, input.unsafeGet(pos))
+    cur = derive(cur, input.get(pos))
     pos = pos + 1
   }
   cur.accepts()
@@ -124,7 +124,7 @@ def jit_matcher[R](re: Reg){ body: { ByteArray => Bool } => R }: R = registerAll
 
   
   def interpret(st: Reg, ba: ByteArray, pos: Int) = {
-    val next = derive(st, ba.unsafeGet(pos))
+    val next = derive(st, ba.get(pos))
     (next, pos + 1)
   }
   def enterNative(idx: Int, ba: ByteArray, pos: Int) = {
@@ -138,8 +138,8 @@ def jit_matcher[R](re: Reg){ body: { ByteArray => Bool } => R }: R = registerAll
   def initialize(st: Reg) = {
     val index = nextStateIndex
     if(index < nStates) {
-      states.unsafeSet(index, st)
-      accepting.unsafeSet(index, st.accepts)
+      states.set(index, st)
+      accepting.set(index, st.accepts)
       val offset = index * stateSize
       val end = compiled.write(offset){ aarch64{
 
@@ -164,7 +164,7 @@ def jit_matcher[R](re: Reg){ body: { ByteArray => Bool } => R }: R = registerAll
         do dropReg(left)
         do emit(LOAD_BYTE(rPtr,rCurChar,tmp2))
         do dropReg(tmp2)
-        statePos.unsafeSet(index, do getPos())
+        statePos.set(index, do getPos())
 
         // space for transitions
         repeat(nTransitions){ do emit(NOP()); do emit(NOP()) }
@@ -203,9 +203,9 @@ def jit_matcher[R](re: Reg){ body: { ByteArray => Bool } => R }: R = registerAll
   }
   def addTransition(frIdx: Int, to: Reg, b: Byte) = boundary{
     def insertTransition(frIdx: Int, toIdx: Int, b: Byte) = {
-      val pos = statePos.unsafeGet(frIdx)
+      val pos = statePos.get(frIdx)
       if (pos < (1 + frIdx) * stateSize - 3 * 4) {
-        statePos.unsafeSet(frIdx, compiled.write(pos){ aarch64{
+        statePos.set(frIdx, compiled.write(pos){ aarch64{
           val rCurChar = do argReg(3)
           do emit(JEQ(toIdx * stateSize + 4, rCurChar, b.toInt))
         }})
@@ -236,19 +236,19 @@ def jit_matcher[R](re: Reg){ body: { ByteArray => Bool } => R }: R = registerAll
       } else {
         val (nst, npos) = enterNative(stIdx, ba, pos)
         if (pos == npos && pos < ba.size()) {
-          val (ist, ipos) = interpret(states.unsafeGet(stIdx), ba, pos)
-          addTransition(stIdx, ist, ba.unsafeGet(pos))
+          val (ist, ipos) = interpret(states.get(stIdx), ba, pos)
+          addTransition(stIdx, ist, ba.get(pos))
           pos = ipos
           st = ist
           stIdx = ensureState(st)
         } else {
           stIdx = nst
           pos = npos
-          st = states.unsafeGet(stIdx)
+          st = states.get(stIdx)
         }
       }
     }
-    if (stIdx > 0){ accepting.unsafeGet(stIdx) } else { st.accepts }
+    if (stIdx > 0){ accepting.get(stIdx) } else { st.accepts }
   }
 }
 

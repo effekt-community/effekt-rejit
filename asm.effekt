@@ -61,14 +61,14 @@ def registerAllocatorArm[R]{ body: => R / RegisterAlloc }: R = {
     }
     def freshReg() = {
       var j = 0
-      while(tmpRegs.unsafeGet(j) && j < 7) { j = j + 1 }
-      if (tmpRegs.unsafeGet(j)) <>
-      tmpRegs.unsafeSet(j, true)
+      while(tmpRegs.get(j) && j < 7) { j = j + 1 }
+      if (tmpRegs.get(j)) <>
+      tmpRegs.set(j, true)
       resume(j + 9)
     }
     def dropReg(r) = {
       val j = r - 9
-      tmpRegs.unsafeSet(j, false)
+      tmpRegs.set(j, false)
       resume(())
     }
   }
@@ -150,7 +150,7 @@ def aarch64{ body: => Unit / Asm }: Unit / {getPos, emit[Byte]} = {
             bit"0001 0 ${imm19.Signed.LE.OfWidth(19)} 0 0101010"
           } else <>
           resume(())
-        case CONST(out, v) and v >=0 and v <= 65535 =>
+        case CONST(out, v) and v >= 0 and v <= 65535 =>
           // MOVZ
           bit"${out.LE.OfWidth(5)} ${0.LE.OfWidth(16)} ${0.LE.OfWidth(2)} 101001 01 1"
           resume(())

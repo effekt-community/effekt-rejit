@@ -97,7 +97,7 @@ def hex{ body: => Unit / { literal, HexSplices } }: Unit / emit[Byte] = {
       body()
     }
     with splice[String] { s =>
-      feed(s){ exhaustively{ do splice[Char](do read[Char]()) } }
+      feed(s){ loop { do splice[Char](do read[Char]()) } }
       resume(())
     }
     with splice[ByteArray] { ba =>
@@ -107,7 +107,7 @@ def hex{ body: => Unit / { literal, HexSplices } }: Unit / emit[Byte] = {
   }
   with literal { s =>
       feed(s){
-        exhaustively {
+        loop {
           with on[WrongFormat].default { () }
           val upper: Int = hexDigitValue(do read[Char]())
           val lower: Int = hexDigitValue(do read[Char]())
@@ -308,7 +308,7 @@ def bit{ body: => Unit / { literal, BinSplices } }: Unit / emit[Bit] = {
   }
   with literal { s =>
     feed(s){
-      exhaustively {
+      loop {
         do read[Char]() match {
           case '0' => do emit(B0())
           case '1' => do emit(B1())
