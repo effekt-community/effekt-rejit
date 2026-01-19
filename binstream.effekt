@@ -108,10 +108,11 @@ def hex{ body: => Unit / { literal, HexSplices } }: Unit / emit[Byte] = {
   with literal { s =>
       feed(s){
         loop {
-          with on[WrongFormat].default { () }
-          val upper: Int = hexDigitValue(do read[Char]())
-          val lower: Int = hexDigitValue(do read[Char]())
-          do emit[Byte]((16 * upper + lower).toByte)
+          attempt {
+            val upper: Int = hexDigitValue(do read[Char]())
+            val lower: Int = hexDigitValue(do read[Char]())
+            do emit[Byte]((16 * upper + lower).toByte)
+          } { () }
         }
       }
       resume(())
