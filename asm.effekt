@@ -1,7 +1,8 @@
 import stream
-import binstream
+import bytestream
 import array
 import jitlib
+import utils
 
 type Label = Int
 type Register = Int
@@ -99,7 +100,7 @@ def backpatch(id: BackpatchID){ body: => Unit }: Unit / {getPos, seek, emit[AsmI
   backpatch(id){ do emit(NOP()) }{body}
 
 def aarch64{ body: => Unit / Asm }: Unit / {getPos, emit[Byte]} = {
-  try body() 
+  try body()
   with label { () => resume(do getPos()) }
   with emit[AsmInstruction] { ins =>
     groupBytesLE{

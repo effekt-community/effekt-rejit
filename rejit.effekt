@@ -3,9 +3,10 @@ import jitlib
 import bytearray
 import stream
 import array
-import binstream
+import bytestream
 import stringbuffer
 import bench
+import utils
 
 // Helpers
 // --------

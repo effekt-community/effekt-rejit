@@ -1,0 +1,35 @@
+
+module utils
+
+// from old 'binstream'
+
+def pow(n: Int, exp: Int): Int = {
+  def go(n: Int, exp: Int, acc: Int): Int = {
+    if (exp == 0) {
+      acc
+    } else if (mod(exp, 2) == 0) {
+      go(n * n, exp / 2, acc)
+    } else {
+      go(n * n, exp / 2, acc * n)
+    }
+  }
+  go(n, exp, 1)
+}
+
+effect pad[A](fac: Int){ gen: => A }: Unit
+def tracking[A](init: Int){ body: => Unit / { emit[A], getPos, pad[A] } }: Unit / emit[A] = {
+  var n = init
+  try body()
+  with emit[A] { b => n = n + 1; resume(do emit[A](b)) }
+  with getPos{ resume(n) }
+  with pad[A] { fac =>
+    resume { {gen} =>
+      while(mod(n, fac) != 0){
+        do emit[A](gen())
+        n = n + 1
+      }
+    }
+  }
+}
+def tracking[A]{ body: => Unit / { emit[A], getPos, pad[A] } }: Unit / emit[A] =
+  tracking[A](0){body}

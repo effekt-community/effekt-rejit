@@ -3,8 +3,9 @@
 /// TODO also allow calling with multiple / other values
 module jitlib
 
-import binstream
+import bytestream
 import stream
+import utils
 
 // generated from jitlib.c (see Makefile)
 extern include llvm "jitlib.ll"
