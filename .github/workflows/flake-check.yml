@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   flake-check:
-    runs-on: "ubuntu-latest"
+    runs-on: "macos-latest"
     steps:
       - name: "Checking out repository..."
         uses: actions/checkout@v5
