@@ -39,7 +39,7 @@
           # Chooses the correct Effekt package.
           effektBuild = effekt-lib.getEffekt effektConfig;
         in {
-          default = (effekt-lib.buildEffektPackage {
+          default = effekt-lib.buildEffektPackage {
             inherit pname version;
             src = ./.;
             main = mainFile;
@@ -47,12 +47,11 @@
 
             effekt = effektBuild;
             inherit (effektConfig) backends;
-          }).overrideAttrs (final: old: {
-            buildPhase = ''
-              make jitlib.ll
-              ${old.buildPhase or ""}
-            '';
-          });
+
+            ## Generate 'jitlib.ll' before the Effekt build.
+            nativeBuildInputs = [ nixpkgsFor.${system}.gnumake ];
+            preBuild = "make jitlib.ll";
+          };
         }
       );
 
