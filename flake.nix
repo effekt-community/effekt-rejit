@@ -39,6 +39,9 @@
           # Chooses the correct Effekt package.
           effektBuild = effekt-lib.getEffekt effektConfig;
 
+          ## Tools for 'make jitlib.ll', both in the build and in the devshell
+          tools = [ nixpkgsFor.${system}.gnumake ];
+
           package = effekt-lib.buildEffektPackage {
             inherit pname version;
             src = ./.;
@@ -47,7 +50,7 @@
             meta.platforms = systems;
 
             ## Generate 'jitlib.ll' before the Effekt build.
-            nativeBuildInputs = [ nixpkgsFor.${system}.gnumake ];
+            nativeBuildInputs = tools;
             postPatch = "make jitlib.ll";
 
             effekt = effektBuild;
@@ -64,6 +67,8 @@
           devShell = effekt-lib.mkDevShell {
             effekt = effektBuild;
             inherit (effektConfig) backends;
+
+            packages = tools;
           };
         };
 
