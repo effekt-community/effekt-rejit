@@ -26,47 +26,50 @@
       ## Effekt configuration
       effektConfig = {
         ## Uncomment and set a specific version if needed:
-        # version = "0.10.0";
+        # version = "0.82.0";
 
-        ## Select the backends that your project works on:
+        ## Select the backends that your project works on (CI builds and tests each one):
         backends = bs: [ bs.llvm ];
       };
-    in {
-      packages = forAllSystems (system:
+
+      perSystem = system:
         let
           effekt-lib = effekt-nix.lib.mkLib nixpkgsFor.${system};
 
           # Chooses the correct Effekt package.
           effektBuild = effekt-lib.getEffekt effektConfig;
-        in {
-          default = effekt-lib.buildEffektPackage {
+
+          package = effekt-lib.buildEffektPackage {
             inherit pname version;
             src = ./.;
             main = mainFile;
             tests = testFiles;
-
-            effekt = effektBuild;
-            inherit (effektConfig) backends;
+            meta.platforms = systems;
 
             ## Generate 'jitlib.ll' before the Effekt build.
             nativeBuildInputs = [ nixpkgsFor.${system}.gnumake ];
             preBuild = "make jitlib.ll";
-          };
-        }
-      );
 
-      devShells = forAllSystems (system:
-        let
-          effekt-lib = effekt-nix.lib.mkLib nixpkgsFor.${system};
-
-          # Chooses the correct Effekt package.
-          effektBuild = effekt-lib.getEffekt effektConfig;
-        in {
-          default = effekt-lib.mkDevShell {
             effekt = effektBuild;
             inherit (effektConfig) backends;
           };
-        }
-      );
+
+          variants = effekt-lib.variantsOf package;
+        in {
+          ## The package, plus one for each backend (such as 'llvm')
+          packages = variants // {
+            default = package;
+          };
+
+          devShell = effekt-lib.mkDevShell {
+            effekt = effektBuild;
+            inherit (effektConfig) backends;
+          };
+        };
+
+      allSystems = forAllSystems perSystem;
+    in {
+      packages = builtins.mapAttrs (system: outputs: outputs.packages) allSystems;
+      devShells = builtins.mapAttrs (system: outputs: { default = outputs.devShell; }) allSystems;
     };
 }
