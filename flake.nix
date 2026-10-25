@@ -48,7 +48,7 @@
 
             ## Generate 'jitlib.ll' before the Effekt build.
             nativeBuildInputs = [ nixpkgsFor.${system}.gnumake ];
-            preBuild = "make jitlib.ll";
+            postPatch = "make jitlib.ll";
 
             effekt = effektBuild;
             inherit (effektConfig) backends;
